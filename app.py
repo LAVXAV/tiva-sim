@@ -1,12 +1,10 @@
 """
-tiva_sim_schedule.py
+app.py
 
-Prototype completo do TIVA-SIM: simula infusão alvo-controlada de propofol
-usando equipo manual (macro ou micro gotas), com possibilidade de despertar
-(interrupção) a qualquer momento via Ctrl+C.
+Streamlit app do TIVA-SIM: simula infusão alvo-controlada de propofol usando equipo manual
+(meta: modelo Schnider, três blocos de infusão) e permite simulação interativa via slider.
 """
-
-import time
+import streamlit as st
 from dataclasses import dataclass
 from typing import List
 
@@ -22,34 +20,26 @@ class Equipo:
     name: str
     drop_factor: int  # gotas por mL
 
-    def gtt_per_min(self, rate_ml_h: float) -> float:
-        return rate_ml_h * self.drop_factor / 60.0
+    def gtt_per_min(self, rate_ml_h: float) -> int:
+        return round(rate_ml_h * self.drop_factor / 60.0)
 
 @dataclass
 class ScheduleStep:
     start_min: int
     end_min: int
-    rate_ml_h: float
     gtt_min: int
 
 # Equipos disponíveis
 MACRO = Equipo('MACRO', 20)
 MICRO = Equipo('MICRO', 60)
 
-
+# Função de geração de cronograma
 def generate_schedule(patient: Patient, equipo: Equipo, duration_min: int) -> List[ScheduleStep]:
-    """
-    Gera roteiro de infusão em até 3 blocos:
-      0–5  min: 6 mg/kg/h       (indução/plateau inicial)
-      5–15 min: 4.8 mg/kg/h     (redução 20%)
-      15–duração: 4 mg/kg/h    (redução 33%)
-    Converte mg/kg/h → mL/h (Propofol: 10 mg/mL) e mL/h → gotas/min.
-    """
     w = patient.weight
+    # taxas mg/kg/h → mL/h (10 mg/mL)
     start_mlh = 6 * w / 10.0
     mid_mlh   = start_mlh * 0.8
     final_mlh = start_mlh * 0.667
-
     raw = []
     if duration_min <= 5:
         raw.append((0, duration_min, start_mlh))
@@ -57,54 +47,32 @@ def generate_schedule(patient: Patient, equipo: Equipo, duration_min: int) -> Li
         raw.extend([(0, 5, start_mlh), (5, duration_min, mid_mlh)])
     else:
         raw.extend([(0, 5, start_mlh), (5, 15, mid_mlh), (15, duration_min, final_mlh)])
+    return [ScheduleStep(s, e, equipo.gtt_per_min(r)) for s, e, r in raw]
 
-    return [ScheduleStep(s, e, r, round(equipo.gtt_per_min(r))) for s, e, r in raw]
+# UI
+st.title("TIVA‑SIM Manual (Streamlit)")
+with st.sidebar:
+    st.header("Parâmetros do Paciente & Equipo")
+    weight = st.number_input("Peso (kg)", min_value=1.0, max_value=200.0, value=70.0)
+    height = st.number_input("Altura (m)", min_value=0.5, max_value=2.5, value=1.70)
+    age = st.number_input("Idade (anos)", min_value=0, max_value=120, value=30)
+    sex = st.radio("Sexo", options=["M", "F"], index=0)
+    equipo_choice = st.selectbox("Equipo de gotas", ["MACRO (20 gtt/mL)", "MICRO (60 gtt/mL)"])
+    equipo = MACRO if equipo_choice.startswith('MACRO') else MICRO
+    duration = st.slider("Duração TIVA (min)", min_value=1, max_value=120, value=60)
 
-
-def run_simulation(schedule: List[ScheduleStep]):
-    """
-    Executa simulação de infusão: mostra cada minuto a taxa em gotas/min,
-    e permite despertar a qualquer momento com Ctrl+C.
-    """
-    print("Iniciando simulação. Pressione Ctrl+C a qualquer momento para despertar.")
-    try:
-        for step in schedule:
-            for minute in range(step.start_min, step.end_min):
-                print(f"[min {minute:>2}] Taxa: {step.gtt_min} gtt/min")
-                time.sleep(60)  # simula 1 minuto
-    except KeyboardInterrupt:
-        print("\n### Wake-up solicitado! Interrompendo infusão... ###")
-        return
-    print("\nSimulação concluída conforme cronograma.")
-
-
-def main():
-    # Entrada de dados
-    print("=== TIVA-SIM Manual Simulator ===")
-    w = float(input("Peso (kg): "))
-    h = float(input("Altura (m): "))
-    age = int(input("Idade (anos): "))
-    sex = input("Sexo (M/F): ").upper().strip()
-    patient = Patient(w, h, age, sex)
-
-    # Seleção de equipo anterior à infusão
-    opt = None
-    while opt not in ('1', '2'):
-        print("Escolha o equipo: 1) Macro (20 gtt/mL)   2) Micro (60 gtt/mL)")
-        opt = input().strip()
-    equipo = MACRO if opt == '1' else MICRO
-
-    duration = int(input("Duração estimada da TIVA (min): "))
+if st.button("Gerar Cronograma"):
+    patient = Patient(weight, height, age, sex)
     schedule = generate_schedule(patient, equipo, duration)
-
-    # Exibe resumo
-    print(f"\nEquipo selecionado: {equipo.name} ({equipo.drop_factor} gtt/mL)")
-    for s in schedule:
-        print(f"{s.start_min:>2}–{s.end_min:>2} min : {s.gtt_min} gtt/min")
-
-    input("\nPressione Enter para iniciar...")
-    run_simulation(schedule)
-
-
-if __name__ == '__main__':
-    main()
+    # tabela de cronograma
+    table = [{"Início (min)": s.start_min, "Fim (min)": s.end_min, "Gotas/min": s.gtt_min} for s in schedule]
+    st.subheader("Cronograma de Infusão")
+    st.table(table)
+    # simulação interativa
+    minute = st.slider("Minuto Atual", min_value=0, max_value=duration, value=0)
+    current = next((s for s in schedule if s.start_min <= minute < s.end_min), None)
+    if current:
+        st.metric("Gotas por minuto", f"{current.gtt_min}")
+    # botão de despertar
+    if st.button("Despertar Paciente"):
+        st.warning("Wake-up solicitado! Interrompendo infusão...")
