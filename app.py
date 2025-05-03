@@ -1,39 +1,47 @@
+import streamlit as st
+import matplotlib.pyplot as plt
 from models.schnider_full import simulate_schnider_full
 
-import streamlit as st
-import numpy as np
-import matplotlib.pyplot as plt
-
-# Título do app
+# Configurações da página
 st.set_page_config(page_title="TIVA-SIM", layout="centered")
-st.title("💉 TIVA-SIM")
-st.subheader("Simulador de TIVA com equipo simples")
+st.title("💉 TIVA-SIM — Simulador de Infusão Alvo-Controlada")
 
 # Dados do paciente
-st.sidebar.header("📋 Dados do paciente")
-idade = st.sidebar.number_input("Idade", 18, 100, 40)
-peso = st.sidebar.number_input("Peso (kg)", 30.0, 150.0, 70.0)
-altura = st.sidebar.number_input("Altura (cm)", 100.0, 210.0, 170.0)
+st.sidebar.header("📋 Dados do Paciente")
+peso = st.sidebar.number_input("Peso (kg)", min_value=30.0, max_value=200.0, value=70.0)
+altura = st.sidebar.number_input("Altura (cm)", min_value=140.0, max_value=210.0, value=170.0)
+idade = st.sidebar.number_input("Idade", min_value=18, max_value=100, value=40)
 sexo = st.sidebar.selectbox("Sexo", ["Masculino", "Feminino"])
 
-# Alvos de Ce
-st.markdown("### 🎯 Concentração Alvo (Ce)")
-propofol_ce = st.slider("Propofol (mcg/mL)", 0.5, 6.0, 3.0, 0.1)
-remi_ce = st.slider("Remifentanil (ng/mL)", 0.5, 5.0, 2.5, 0.1)
-dex_ce = st.slider("Dexmedetomidina (ng/mL estimada)", 0.2, 1.2, 0.6, 0.1)
+# Parâmetro de entrada clínica
+st.sidebar.header("🎯 Objetivo Clínico")
+propofol_ce = st.sidebar.slider("Concentração-alvo de Propofol (Ce) em mcg/mL", min_value=0.5, max_value=6.0, value=3.0, step=0.1)
 
-# Botão de simulação
+st.markdown("Clique no botão abaixo para iniciar a simulação com o **modelo farmacocinético-farmacodinâmico completo de Schnider**.")
+
 if st.button("▶️ Iniciar Infusão"):
-    # Simulação de Ce fictícia para início
-    tempo = np.arange(0, 20, 1)
-    curva_ce = propofol_ce * (1 - np.exp(-0.3 * tempo))
+    # Estimar taxa de infusão a partir da Ce alvo (aproximado)
+    V1 = 4.27  # L
+    infusion_rate = propofol_ce * V1  # mg para atingir Ce alvo
+    infusion_rate_mg_per_min = infusion_rate / 60
 
-    st.success("Infusão simulada! Veja a curva abaixo:")
+    # Simula por 30 minutos com passo de 0.1 min
+    t, Cp, Ce = simulate_schnider_full(
+        duration_min=30,
+        infusion_rate_mg_per_min=infusion_rate_mg_per_min
+    )
 
+    st.success("✅ Simulação concluída com o modelo Schnider completo!")
+    st.markdown(f"💉 Infusão contínua estimada: **{infusion_rate:.1f} mg/h**")
+    st.markdown(f"🧠 Ce alvo: **{propofol_ce:.2f} mcg/mL** — atingido progressivamente")
+
+    # Gráfico
     fig, ax = plt.subplots()
-    ax.plot(tempo, curva_ce, label="Ce Propofol")
-    ax.set_xlabel("Minutos")
-    ax.set_ylabel("Ce (mcg/mL)")
-    ax.set_title("Curva simulada de Ce")
+    ax.plot(t, Cp, label="Cp (Plasma)", linestyle="--")
+    ax.plot(t, Ce, label="Ce (Efeito)", linewidth=2)
+    ax.set_xlabel("Tempo (min)")
+    ax.set_ylabel("Concentração (mg/L)")
+    ax.set_title("Curvas simuladas — Modelo Schnider Completo")
     ax.legend()
+    ax.grid(True)
     st.pyplot(fig)
