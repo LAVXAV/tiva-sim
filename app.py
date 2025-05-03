@@ -1,3 +1,5 @@
+from models.schnider_full import simulate_schnider_full
+
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
