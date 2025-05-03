@@ -1,96 +1,86 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import time
-from models.schnider_full import simulate_schnider_full
+import matplotlib.pyplot as plt
 import streamlit.components.v1 as components
 
-# Configuração da página
-st.set_page_config(page_title="TIVA-SIM", layout="centered")
-st.title("💉 TIVA-SIM — Infusão Alvo-Controlada Manual de Propofol")
+# === Helper: PK parameters Schnider ===
 
-# Sidebar: parâmetros
-with st.sidebar:
-    st.header("Parâmetros do Paciente")
-    idade = st.number_input("Idade (anos)", 18, 100, 40)
-    peso = st.number_input("Peso (kg)", 30.0, 150.0, 70.0)
-    altura = st.number_input("Altura (cm)", 100.0, 210.0, 170.0)
-    sexo = st.selectbox("Sexo", ["Masculino","Feminino"])
-    st.header("Configuração da Infusão")
-    tipo_eq = st.selectbox("Tipo de equipo", ["Macro (20 gotas/mL)", "Micro (60 gotas/mL)"])
-    conc_sol = st.number_input("Concentração propofol (mg/mL)", 1.0, 20.0, 10.0)
-    ce_target = st.slider("Ce alvo (mcg/mL)", 0.5, 6.0, 3.0, 0.1)
-    duracao = st.slider("Duração (min)", 1, 60, 30)
-    ativar_metro = st.checkbox("Ativar metrônomo sonoro e visual")
-    modo_teste = st.checkbox("Modo Teste (acelerado)")
-    btn_simular = st.button("▶️ Simular Infusão")
+def schnider_pk(weight, height, age):
+    V1 = 4.27 - 0.0201*(age-40)           # L
+    V2 = 18.9
+    Cl1 = 1.89 + 0.0456*(weight-70) - 0.0681*(height-170)  # L/min
+    return V1, Cl1
 
-# Cálculo V1 e gotas por mL
-V1 = 4.27 - 0.0201*(idade-40)
-gotas_ml = 20 if tipo_eq.startswith("Macro") else 60
+# === Metrónomo HTML ===
 
-def render_metronome(interval_s: float):
-    html = f"""
-    <div id='dot' style='width:12px;height:12px;border-radius:50%;background:red;'></div>
+def metronome(interval):
+    ms = int(interval*1000)
+    return f"""
+    <div id='dot' style='width:14px;height:14px;border-radius:50%;background:red;'></div>
     <script>
-      if(window.metInt) clearInterval(window.metInt);
-      const dot = document.getElementById('dot');
-      let snd = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
-      window.metInt = setInterval(() => {{ snd.play(); dot.style.visibility = dot.style.visibility==='hidden'?'visible':'hidden'; }}, {int(interval_s*1000)});
+      if(window.metro) clearInterval(window.metro);
+      const d=document.getElementById('dot');
+      const snd=new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
+      window.metro=setInterval(()=>{snd.play();d.style.visibility=d.style.visibility==='hidden'?'visible':'hidden';},{ms});
     </script>
     """
-    components.html(html, height=30)
 
-# Simulação dinâmica
-if btn_simular:
-    st.subheader("📈 Monitoramento em Tempo Real da Infusão")
-    # placeholders
-    place_rate = st.empty()
-    place_gotas = st.empty()
-    place_interval = st.empty()
-    place_chart = st.empty()
+# === Sidebar ===
 
-    # calcula taxa e arrays de tempo
-    taxa_mgh = ce_target * V1
-    taxa_mgmin = taxa_mgh / 60
-    gotas_min = taxa_mgmin / conc_sol * gotas_ml
-    interval_s = 60 / gotas_min if gotas_min>0 else 0
+st.sidebar.title('🔧 Configurações')
+idade = st.sidebar.number_input('Idade',18,100,40)
+peso  = st.sidebar.number_input('Peso (kg)',30.,150.,70.)
+altura= st.sidebar.number_input('Altura (cm)',100.,210.,170.)
+ce_target = st.sidebar.slider('Ce alvo (mcg/mL)',0.5,6.0,3.0,0.1)
+duracao  = st.sidebar.slider('Duração (min)',5,120,30)
+team = st.sidebar.selectbox('Equipo',['Macro (20 gotas/mL)','Micro (60 gotas/mL)'])
+conc = st.sidebar.number_input('Concentração (mg/mL)',1.,20.,10.)
+sonoro = st.sidebar.checkbox('Metrônomo sonoro')
+modo_teste = st.sidebar.checkbox('Modo teste (x10)')
+start = st.sidebar.button('▶️ Iniciar')
 
-    # exibe taxa fixa
-    place_rate.metric("Taxa infusão (mg/h)", f"{taxa_mgh:.1f}")
-    place_gotas.metric("Gotas/min estimadas", f"{gotas_min:.2f}")
-    if ativar_metro and interval_s>0:
-        place_interval.write(f"🔔 Intervalo: **{interval_s:.1f} s/gota**")
-    
-    # simula com Schnider
-    t, Cp, Ce = simulate_schnider_full(duration_min=duracao, infusion_rate_mg_per_min=taxa_mgmin)
-    Cp = np.array(Cp)*1000
-    Ce = np.array(Ce)*1000
-    df_log = pd.DataFrame(columns=["Tempo","Cp","Ce"])
+gotas_ml=20 if team.startswith('Macro') else 60
 
-    # loop de atualização
-    for i, tm in enumerate(t):
-        # render metronomo a cada segundo
-        if ativar_metro and interval_s>0:
-            render_metronome(interval_s)
-        
-        # atualiza gráfico incremental
-        fig, ax = plt.subplots()
-        ax.plot(t[:i+1], Ce[:i+1], color='orange', label='Ce')
-        ax.axhline(ce_target, color='green', linestyle='--', label='Ce alvo')
-        ax.set_xlim(0, duracao)
-        ax.set_ylim(0, max(ce_target*1.2, max(Ce)*1.1))
-        ax.set_xlabel('Tempo (min)')
-        ax.set_ylabel('Concentração (mcg/mL)')
-        ax.legend()
-        place_chart.pyplot(fig)
+# === Main ===
 
-        # log
-        df_log.loc[i] = [tm, Cp[i], Ce[i]]
+st.title('TIVA‑SIM • Propofol TCI Manual')
 
-        # aguarda
-        time.sleep(0.1 if modo_teste else 1)
+if start:
+    V1, Cl1 = schnider_pk(peso,altura,idade)
+    bolus_mg = ce_target*V1*1000  # mg
+    mant_mg_min = ce_target*Cl1   # mg/min
 
-    st.success("✔️ Simulação concluída")
-    st.download_button("⬇️ Baixar CSV", df_log.to_csv(index=False).encode(), "tiva_sim.csv", "text/csv")
+    # cronômetro controlado por session_state
+    if 't0' not in st.session_state: st.session_state.t0=time.time()
+    elapsed = (time.time()-st.session_state.t0)*(10 if modo_teste else 1)/60  # minutos
+
+    schedule = pd.DataFrame({
+        'Tempo_min': np.arange(0,duracao+1),
+        'Taxa_mg_min': mant_mg_min,
+    })
+    schedule['Gotas_min'] = schedule['Taxa_mg_min']/conc*gotas_ml
+
+    # Panel
+    cols=st.columns(4)
+    cols[0].metric('Bolus inicial (mg)',f"{bolus_mg:.0f}")
+    cols[1].metric('Taxa mant. (mg/min)',f"{mant_mg_min:.2f}")
+    cols[2].metric('Gotas/min',f"{schedule['Gotas_min'][0]:.1f}")
+    intervalo=60/schedule['Gotas_min'][0] if schedule['Gotas_min'][0]>0 else 0
+    cols[3].metric('Intervalo (s)',f"{intervalo:.1f}")
+
+    if sonoro and intervalo>0:
+        components.html(metronome(intervalo),height=40)
+
+    st.subheader('Tabela de referência')
+    st.dataframe(schedule[['Tempo_min','Gotas_min']])
+
+    # Plot gotas vs tempo
+    fig,ax=plt.subplots(figsize=(6,3))
+    ax.step(schedule['Tempo_min'],schedule['Gotas_min'],where='post')
+    ax.set_xlabel('Tempo (min)');ax.set_ylabel('Gotas/min');ax.set_title('Perfil recomendado')
+    st.pyplot(fig)
+
+    # CSV download
+    st.download_button('⬇️ CSV',schedule.to_csv(index=False).encode(),'tiva_schedule.csv','text/csv')
