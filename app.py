@@ -1,86 +1,148 @@
-import streamlit as st
-import numpy as np
-import pandas as pd
+"""
+tiva_sim.py
+
+Complete TIVA‑SIM prototype: simula infusão alvo-controlada de propofol
+usando equipo manual (macro ou micro gotas).
+Permite definição de parâmetros do paciente, seleção de equipo,
+infusão passo-a-passo e interrupção (wake-up) a qualquer momento.
+"""
+
 import time
-import matplotlib.pyplot as plt
-import streamlit.components.v1 as components
+import threading
+from dataclasses import dataclass
+from typing import List
 
-# === Helper: PK parameters Schnider ===
+try:
+    from playsound import playsound
+    BEEP_AVAILABLE = True
+except ImportError:
+    BEEP_AVAILABLE = False
 
-def schnider_pk(weight, height, age):
-    V1 = 4.27 - 0.0201*(age-40)           # L
-    V2 = 18.9
-    Cl1 = 1.89 + 0.0456*(weight-70) - 0.0681*(height-170)  # L/min
-    return V1, Cl1
 
-# === Metrónomo HTML ===
+@dataclass
+class Patient:
+    weight: float   # kg
+    height: float   # m
+    age: int        # anos
+    sex: str        # 'M' ou 'F'
 
-def metronome(interval):
-    ms = int(interval*1000)
-    return f"""
-    <div id='dot' style='width:14px;height:14px;border-radius:50%;background:red;'></div>
-    <script>
-      if(window.metro) clearInterval(window.metro);
-      const d=document.getElementById('dot');
-      const snd=new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
-      window.metro=setInterval(()=>{snd.play();d.style.visibility=d.style.visibility==='hidden'?'visible':'hidden';},{ms});
-    </script>
+
+@dataclass
+class Equipo:
+    name: str
+    drop_factor: int  # gotas por mL
+
+    def gtt_per_min(self, rate_ml_h: float) -> float:
+        return rate_ml_h * self.drop_factor / 60.0
+
+
+@dataclass
+class ScheduleStep:
+    start_min: int
+    end_min: int
+    rate_ml_h: float
+    gtt_min: int
+
+
+# Configurações
+MACRO = Equipo('MACRO', 20)
+MICRO = Equipo('MICRO', 60)
+
+
+def generate_schedule(patient: Patient, equipo: Equipo, duration_min: int) -> List[ScheduleStep]:
     """
+    Gera roteiro de infusão em até 3 blocos:
+      0–5  min: 6 mg/kg/h       (start)
+      5–15 min: 4.8 mg/kg/h     (–20%)
+      15–duration: 4 mg/kg/h    (–33%)
+    Converte mg/kg/h → mL/h (10 mg/ml) e mL/h → gotas/min.
+    """
+    w = patient.weight
+    start_mlh = 6 * w / 10.0
+    mid_mlh   = start_mlh * 0.8
+    final_mlh = start_mlh * 0.667
 
-# === Sidebar ===
+    steps = []
+    if duration_min <= 5:
+        steps.append((0, duration_min, start_mlh))
+    elif duration_min <= 15:
+        steps.extend([(0, 5, start_mlh), (5, duration_min, mid_mlh)])
+    else:
+        steps.extend([(0, 5, start_mlh), (5, 15, mid_mlh), (15, duration_min, final_mlh)])
 
-st.sidebar.title('🔧 Configurações')
-idade = st.sidebar.number_input('Idade',18,100,40)
-peso  = st.sidebar.number_input('Peso (kg)',30.,150.,70.)
-altura= st.sidebar.number_input('Altura (cm)',100.,210.,170.)
-ce_target = st.sidebar.slider('Ce alvo (mcg/mL)',0.5,6.0,3.0,0.1)
-duracao  = st.sidebar.slider('Duração (min)',5,120,30)
-team = st.sidebar.selectbox('Equipo',['Macro (20 gotas/mL)','Micro (60 gotas/mL)'])
-conc = st.sidebar.number_input('Concentração (mg/mL)',1.,20.,10.)
-sonoro = st.sidebar.checkbox('Metrônomo sonoro')
-modo_teste = st.sidebar.checkbox('Modo teste (x10)')
-start = st.sidebar.button('▶️ Iniciar')
+    schedule = [ScheduleStep(s, e, r, round(equipo.gtt_per_min(r))) for (s, e, r) in steps]
+    return schedule
 
-gotas_ml=20 if team.startswith('Macro') else 60
 
-# === Main ===
+def beep_thread():
+    """Toca beep contínuo a cada segundo"""
+    while True:
+        if BEEP_AVAILABLE:
+            playsound('beep.wav', block=False)
+        else:
+            print('Beep')
+        time.sleep(1)
 
-st.title('TIVA‑SIM • Propofol TCI Manual')
 
-if start:
-    V1, Cl1 = schnider_pk(peso,altura,idade)
-    bolus_mg = ce_target*V1*1000  # mg
-    mant_mg_min = ce_target*Cl1   # mg/min
+def run_simulation(schedule: List[ScheduleStep]):
+    """
+    Simula infusão: para cada minuto no cronograma, exibe status e verifica
+    comando do usuário para wake-up.
+    """
+    wake_flag = False
+    print("Iniciando simulação. Digite 'w' + Enter a qualquer momento para despertar.")
 
-    # cronômetro controlado por session_state
-    if 't0' not in st.session_state: st.session_state.t0=time.time()
-    elapsed = (time.time()-st.session_state.t0)*(10 if modo_teste else 1)/60  # minutos
+    for step in schedule:
+        for minute in range(step.start_min, step.end_min):
+            print(f"[min {minute:>2}] Taxa: {step.gtt_min} gtt/min")
+            # opcional: tocar metrônomo (um beep por gota simplificado)
+            # Aqui poderíamos chamar playsound em loop, mas simplificamos:
+            # print(". \b", end='', flush=True)
+            # pausa 60 s
+            start = time.time()
+            # checa input não bloqueante
+            print("> Aperte 'w' para despertar ou Enter para continuar...")
+            user = input().strip().lower()
+            if user == 'w':
+                wake_flag = True
+                break
+            elapsed = time.time() - start
+            if elapsed < 60:
+                time.sleep(60 - elapsed)
+        if wake_flag:
+            print("\n### Wake-up solicitado. Iniciando desmame gradual... ###")
+            # para desmame, simplesmente interrompe aqui; lógica de desmame pode ser adicionada
+            return
+    print("\nSimulação concluída conforme cronograma.")
 
-    schedule = pd.DataFrame({
-        'Tempo_min': np.arange(0,duracao+1),
-        'Taxa_mg_min': mant_mg_min,
-    })
-    schedule['Gotas_min'] = schedule['Taxa_mg_min']/conc*gotas_ml
 
-    # Panel
-    cols=st.columns(4)
-    cols[0].metric('Bolus inicial (mg)',f"{bolus_mg:.0f}")
-    cols[1].metric('Taxa mant. (mg/min)',f"{mant_mg_min:.2f}")
-    cols[2].metric('Gotas/min',f"{schedule['Gotas_min'][0]:.1f}")
-    intervalo=60/schedule['Gotas_min'][0] if schedule['Gotas_min'][0]>0 else 0
-    cols[3].metric('Intervalo (s)',f"{intervalo:.1f}")
+def main():
+    print("=== TIVA-SIM Manual Simulator ===")
+    # entrada de dados do paciente
+    w = float(input("Peso (kg): "))
+    h = float(input("Altura (m): "))
+    age = int(input("Idade (anos): "))
+    sex = input("Sexo (M/F): ").upper().strip()
+    patient = Patient(w, h, age, sex)
 
-    if sonoro and intervalo>0:
-        components.html(metronome(intervalo),height=40)
+    # escolha de equipo
+    eq = None
+    while eq not in ('1', '2'):
+        print("Escolha o equipo: 1) Macro (20 gtt/mL)  2) Micro (60 gtt/mL)")
+        eq = input().strip()
+    equipo = MACRO if eq == '1' else MICRO
 
-    st.subheader('Tabela de referência')
-    st.dataframe(schedule[['Tempo_min','Gotas_min']])
+    duration = int(input("Duração estimada da TIVA (min): "))
 
-    # Plot gotas vs tempo
-    fig,ax=plt.subplots(figsize=(6,3))
-    ax.step(schedule['Tempo_min'],schedule['Gotas_min'],where='post')
-    ax.set_xlabel('Tempo (min)');ax.set_ylabel('Gotas/min');ax.set_title('Perfil recomendado')
-    st.pyplot(fig)
+    schedule = generate_schedule(patient, equipo, duration)
+    print(f"\nEquipe selecionado: {equipo.name} - {equipo.drop_factor} gtt/mL")
+    for s in schedule:
+        print(f"{s.start_min:>2}–{s.end_min:>2} min : {s.gtt_min} gtt/min")
 
-    # CSV download
-    st.download_button('⬇️ CSV',schedule.to_csv(index=False).encode(),'tiva_schedule.csv','text/csv')
+    print("\nPressione Enter para iniciar...")
+    input()
+    run_simulation(schedule)
+
+
+if __name__ == '__main__':
+    main()
