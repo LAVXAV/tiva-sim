@@ -1,6 +1,7 @@
 import streamlit as st
 import matplotlib.pyplot as plt
 import numpy as np
+import time
 from models.schnider_full import simulate_schnider_full
 
 # Configurações da página
@@ -24,32 +25,31 @@ ativar_metronomo = st.checkbox("🕒 Ativar metrônomo para ajuste manual (gotas
 
 # Simulação
 if st.button("▶️ Iniciar Infusão"):
-    # Cálculo aproximado para estimar taxa de infusão (mg/min)
+    # Cálculo da taxa de infusão (mg/min)
     V1 = 4.27  # volume central (L) do modelo Schnider
-    infusion_rate = propofol_ce * V1           # Ce x V1 = carga total (mg)
-    infusion_rate_mg_per_min = infusion_rate / 60  # transforma para mg/min
+    infusion_rate = propofol_ce * V1
+    infusion_rate_mg_per_min = infusion_rate / 60
     infusion_rate_mg_per_h = infusion_rate_mg_per_min * 60
 
-    # Simulação usando o modelo completo
+    # Simulação
     t, Cp, Ce = simulate_schnider_full(
         duration_min=30,
         infusion_rate_mg_per_min=infusion_rate_mg_per_min
     )
 
-    # Conversão para mcg/mL
-    Cp = np.array(Cp) * 1000
+    Cp = np.array(Cp) * 1000  # para mcg/mL
     Ce = np.array(Ce) * 1000
 
     # Cálculo de gotas por minuto
-    concentracao_solucao = 10  # mg/mL (propofol puro)
+    concentracao_solucao = 10  # mg/mL
     equipo_macro = 20  # gotas/mL
-    volume_por_min = infusion_rate_mg_per_min / concentracao_solucao  # mL/min
+    volume_por_min = infusion_rate_mg_per_min / concentracao_solucao
     gotas_por_min = volume_por_min * equipo_macro
 
-    # Resultado da simulação
-    st.success("💡 Simulação concluída!")
-    st.markdown(f"💉 Taxa de infusão simulada: **{infusion_rate_mg_per_h:.1f} mg/h**")
+    st.success("💡 Simulação iniciada em tempo acelerado!")
+
     st.markdown(f"🧪 Ce alvo: **{propofol_ce:.2f} mcg/mL**")
+    st.markdown(f"💉 Taxa de infusão: **{infusion_rate_mg_per_h:.1f} mg/h**")
     st.markdown(f"💧 Infusão estimada: **{gotas_por_min:.1f} gotas/min**")
 
     if ativar_metronomo:
@@ -57,14 +57,22 @@ if st.button("▶️ Iniciar Infusão"):
         st.markdown(f"⏱️ <b>Metrônomo:</b> Goteje a cada <b>{tempo_entre_gotas:.1f} segundos</b>", unsafe_allow_html=True)
         st.markdown("🔄 <i>Use um cronômetro ou clique no botão no tempo indicado para manter a infusão estável.</i>", unsafe_allow_html=True)
 
-    # Gráfico da curva
-    fig, ax = plt.subplots()
-    ax.plot(t, Cp, '--', label="Cp (Plasma)")
-    ax.plot(t, Ce, '-', linewidth=2, label="Ce (Efeito)")
-    ax.axvline(x=0, color='gray', linestyle=':', label="Início da infusão")
-    ax.set_xlabel("Tempo (min)")
-    ax.set_ylabel("Concentração (mcg/mL)")
-    ax.set_title("Curvas simuladas — Modelo Schnider")
-    ax.legend()
-    ax.grid(True)
-    st.pyplot(fig)
+    cronometro = st.empty()
+    grafico_ce = st.empty()
+
+    # Simulação dinâmica
+    for i in range(1, len(t), 2):
+        cronometro.markdown(f"⏱️ Tempo: **{t[i]:.0f} min**")
+
+        fig, ax = plt.subplots()
+        ax.plot(t[:i], Cp[:i], '--', label="Cp (Plasma)")
+        ax.plot(t[:i], Ce[:i], '-', linewidth=2, label="Ce (Efeito)")
+        ax.set_xlabel("Tempo (min)")
+        ax.set_ylabel("Concentração (mcg/mL)")
+        ax.set_title("Curvas simuladas — Modelo Schnider")
+        ax.legend()
+        ax.grid(True)
+        ax.axvline(x=t[i], color='gray', linestyle=':')
+        grafico_ce.pyplot(fig)
+
+        time.sleep(0.2)  # aceleração da simulação
