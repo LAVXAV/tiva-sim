@@ -44,7 +44,7 @@ MICRO = Equipo("Micro", 60)
 EQUIPOS = {e.name: e for e in (MACRO, MICRO)}
 
 # Conversão empírica Ce → mg·kg⁻¹·h⁻¹
-eMGKGH_FACTOR = 2.0
+MGKGH_FACTOR = 2.0
 
 def generate_schedule(patient: Patient, equipo: Equipo, duration_min: int, ce_target: float) -> List[ScheduleStep]:
     mgkg_start = MGKGH_FACTOR * ce_target  # mg·kg⁻¹·h⁻¹
