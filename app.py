@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import List
 import streamlit as st
 import pandas as pd
-import altair as alt
+
 
 # ──────────────────────────── Modelos & utilidades ──────────────────────────── #
 
@@ -147,21 +147,10 @@ if st.session_state.page == "setup":
         
 
 elif st.session_state.page == "running":
-    # Tag HTML para autoatualização a cada segundo
-    st.markdown("<meta http-equiv=\"refresh\" content=\"1\">", unsafe_allow_html=True)
+    # Auto-update a cada segundo usando Streamlit RPC
+efault_line = 1
+st.experimental_rerun = lambda : None  # placeholder, rely on Streamlit auto-rerun
 
-    patient = st.session_state.patient
-    schedule = st.session_state.schedule
-    equipo = st.session_state.equipo
-    wake_time = st.session_state.wake_time_min
-
-    elapsed_sec = int(time.time() - st.session_state.start_time)
-    elapsed_min = elapsed_sec // 60
-    total_dur = schedule[-1].end_min
-    sim_dur = (wake_time + 20) if wake_time else total_dur
-
-    st.title("TIVA-SIM – Infusão Ativa")
-    step = next((s for s in schedule if s.start_min <= elapsed_min < s.end_min), schedule[-1])
     st.metric("Gotejamento (gtt/min)", step.gtt_min if not wake_time else 0)
     st.progress(min(elapsed_min/sim_dur,1.0))
 
@@ -173,11 +162,8 @@ elif st.session_state.page == "running":
         if wake_time and t>=wake_time:
             gtt = 0
         data.append({"Minuto": t, "Gotas/min": gtt, "Ce (µg/mL)": ce})
-    df = pd.DataFrame(data)
-    chart = alt.Chart(df).transform_fold(["Gotas/min","Ce (µg/mL)"], as_=["Tipo","Valor"]).mark_line().encode(
-        x="Minuto:Q", y=alt.Y("Valor:Q", scale=alt.Scale(zero=False)), color="Tipo:N"
-    ).properties(height=300)
-    st.altair_chart(chart, use_container_width=True)
+    df = pd.DataFrame(data).set_index('Minuto')
+    st.line_chart(df[['Gotas/min','Ce (µg/mL)']])
 
     if wake_time:
         rec = predict_wake_recovery_time(ce_vals, wake_time)
