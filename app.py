@@ -135,7 +135,9 @@ if st.session_state.page == "setup":
         st.session_state.page = "running"
 
 elif st.session_state.page == "running":
-    # Autoatualização a cada segundo (Streamlit recarrega automaticamente)
+    # Autoatualização a cada segundo via meta-refresh
+    st.markdown("<meta http-equiv='refresh' content='1'>", unsafe_allow_html=True)
+    patient = st.session_state.patient
     patient = st.session_state.patient
     schedule = st.session_state.schedule
     equipo = st.session_state.equipo
