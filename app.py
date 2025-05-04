@@ -144,7 +144,7 @@ if st.session_state.page == "setup":
         st.session_state.schedule = generate_schedule(st.session_state.patient, equipo, duration, ce_target)
         st.session_state.start_time = time.time()
         st.session_state.page = "running"
-        st.experimental_rerun()
+        
 
 elif st.session_state.page == "running":
     # Tag HTML para autoatualização a cada segundo
@@ -189,7 +189,7 @@ elif st.session_state.page == "running":
     col1, col2 = st.columns([1,4])
     if col1.button("Despertar agora"):
         st.session_state.wake_time_min = elapsed_min
-        st.experimental_rerun()
+        
     with col2:
         st.caption("Interrompe infusão e simula washout de Ce.")
 
@@ -200,4 +200,4 @@ else:
         for k in ["page","start_time","schedule","patient","equipo","ce_target","wake_time_min"]:
             del st.session_state[k]
         init_session_state()
-        st.experimental_rerun()
+        
