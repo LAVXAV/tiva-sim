@@ -1,188 +1,176 @@
-"""
-app.py – TIVA-SIM (versão "Lite TCI")
+// File: package.json
+{
+  "name": "tiva-sim",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "zustand": "^4.0.0",
+    "plotly.js": "^2.20.0",
+    "tone": "^14.7.77",
+    "pyodide": "^0.23.2"
+  },
+  "devDependencies": {
+    "vite": "^4.0.0",
+    "@vitejs/plugin-react": "^3.0.0"
+  }
+}
 
-Simulador de infusão alvo-controlada de propofol usando equipo manual,
-baseado em modelo Schnider PK/PD, com Curva Ce em tempo real,
-autoatualização e simulação de washout com previsão de recobro.
-"""
+// File: vite.config.js
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
-import time
-import math
-from dataclasses import dataclass
-from typing import List
-import streamlit as st
-import pandas as pd
+export default defineConfig({
+  plugins: [react()],
+  server: { port: 3000 }
+});
 
-# ──────────────────────────── Modelos & utilidades ──────────────────────────── #
+// File: src/main.jsx
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import './index.css';
 
-@dataclass
-class Patient:
-    weight: float   # kg
-    height: float   # m
-    age: int        # anos
-    sex: str        # 'M' ou 'F'
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
 
-@dataclass
-class Equipo:
-    name: str
-    drop_factor: int  # gotas por mL
+// File: src/index.css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-    def gtt_per_min(self, rate_ml_h: float) -> int:
-        return round(rate_ml_h * self.drop_factor / 60)
+// File: src/stores/agentStore.js
+import create from 'zustand';
 
-@dataclass
-class ScheduleStep:
-    start_min: int
-    end_min: int
-    rate_ml_h: float
-    gtt_min: int
+export const useAgentStore = create((set) => ({
+  agents: [],
+  addAgent: (agent) => set(state => ({ agents: [...state.agents, agent] })),
+  updateAgent: (id, data) => set(state => ({
+    agents: state.agents.map(a => a.id === id ? { ...a, ...data } : a)
+  })),
+  reset: () => set({ agents: [] })
+}));
 
-# Equipos disponíveis
-MACRO = Equipo("Macro", 20)
-MICRO = Equipo("Micro", 60)
-EQUIPOS = {e.name: e for e in (MACRO, MICRO)}
+// File: src/utils/pkpdEngine.js
+// Initialize Pyodide and expose compute functions
+import { loadPyodide } from 'pyodide';
 
-# Conversão empírica Ce → mg·kg⁻¹·h⁻¹
-MGKGH_FACTOR = 2.0
+let pyodide = null;
+export async function initPyodide() {
+  if (!pyodide) pyodide = await loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.23.2/full/' });
+  await pyodide.loadPackage(['numpy']);
+  const code = `
+import numpy as np
 
-
-def generate_schedule(patient: Patient, equipo: Equipo, duration_min: int, ce_target: float) -> List[ScheduleStep]:
-    mgkg_start = MGKGH_FACTOR * ce_target
-    w = patient.weight
-    mlh_start = mgkg_start * w / 10
-    mlh_mid = mlh_start * 0.8
-    mlh_final = mlh_start * 0.667
-
-    raw = []
-    if duration_min <= 5:
-        raw.append((0, duration_min, mlh_start))
-    elif duration_min <= 15:
-        raw.extend([(0, 5, mlh_start), (5, duration_min, mlh_mid)])
-    else:
-        raw.extend([(0, 5, mlh_start), (5, 15, mlh_mid), (15, duration_min, mlh_final)])
-
-    return [ScheduleStep(s, e, r, equipo.gtt_per_min(r)) for (s, e, r) in raw]
-
-
-def estimate_ce_curve_schnider(patient: Patient, schedule: List[ScheduleStep], total_duration_min: int, resolution_sec: float = 1.0, stop_min: float = None) -> List[float]:
-    V1, V2 = 4.27, 18.9
-    Cl1, Cl2 = 1.89, 1.29
-    ke0 = 0.26
-    steps = int(total_duration_min * 60 / resolution_sec)
-    Ce = [0.0]
-    C1 = 0.0
-    C2 = 0.0
-    dt = resolution_sec / 60
-
+def simulate_cp(rate_ml_h, weight, ke0, dt, duration):
+    # simple one-compartment simulation placeholder
+    steps = int(duration/dt)
+    cp = np.zeros(steps)
     for i in range(1, steps):
-        t_min = i * resolution_sec / 60
-        if stop_min is not None and t_min >= stop_min:
-            rate_ml_h = 0.0
-        else:
-            rate_ml_h = next((s.rate_ml_h for s in schedule if s.start_min <= t_min < s.end_min), schedule[-1].rate_ml_h)
-        dose_mg = (rate_ml_h / 60) * 10
-        dC1 = (dose_mg - Cl1 * C1 - Cl2 * (C1 - C2)) / V1
-        dC2 = (Cl2 * (C1 - C2)) / V2
-        C1 += dC1 * dt
-        C2 += dC2 * dt
-        Ce_prev = Ce[-1]
-        Ce_now = Ce_prev + dt * ke0 * (C1 - Ce_prev)
-        Ce.append(round(Ce_now, 3))
+        cp[i] = cp[i-1] + (rate_ml_h/60.0 - ke0*cp[i-1]) * dt
+    return cp.tolist()
+`;
+  pyodide.runPython(code);
+  return pyodide;
+}
 
-    Ce[0] = Ce[1] / 2
-    return Ce
+export function computeCP(rate, weight, ke0, dt, duration) {
+  return pyodide.globals.get('simulate_cp')(rate, weight, ke0, dt, duration);
+}
 
+// File: src/components/AgentPanel.jsx
+import React, { useEffect, useState } from 'react';
+import Plot from 'react-plotly.js';
+import { initPyodide, computeCP } from '../utils/pkpdEngine';
+import { useAgentStore } from '../stores/agentStore';
+import * as Tone from 'tone';
 
-def predict_wake_recovery_time(ce_values: List[float], start_min: float, threshold: float = 1.0) -> float:
-    for i, ce in enumerate(ce_values):
-        t = i / 60
-        if t > start_min and ce < threshold:
-            return round(t - start_min, 1)
-    return None
+export default function AgentPanel({ agent }) {
+  const { updateAgent } = useAgentStore();
+  const [cpData, setCpData] = useState([]);
+  const [ceData, setCeData] = useState([]);
+  const [pyReady, setPyReady] = useState(false);
 
+  useEffect(() => {
+    initPyodide().then(() => setPyReady(true));
+  }, []);
 
-def init_session_state():
-    defaults = {"page": "setup", "start_time": None, "schedule": None, "patient": None, "equipo": None, "ce_target": 3.0, "wake_time_min": None}
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
+  useEffect(() => {
+    if (!pyReady) return;
+    const dt = 1/60; // 1 second
+    const duration = agent.timeElapsed/60;
+    const cp = computeCP(agent.rate, agent.weight, agent.ke0, dt, duration);
+    const ce = cp.map((c, i) => agent.cePrev + agent.ke0 * (c - agent.cePrev) * dt);
+    setCpData(cp);
+    setCeData(ce);
+  }, [agent.timeElapsed, agent.rate, pyReady]);
 
-# ────────────────────────────────── App ────────────────────────────────────── #
+  // Metrônomo e alarme
+  const startTone = () => {
+    const synth = new Tone.MembraneSynth().toDestination();
+    Tone.Transport.scheduleRepeat(time => synth.triggerAttackRelease('C2', '8n', time), '0.5');
+    Tone.Transport.start();
+  };
 
-st.set_page_config(page_title="TIVA-SIM Lite", layout="centered")
-init_session_state()
+  return (
+    <div className="p-4 bg-white dark:bg-gray-800 rounded-2xl shadow-md mb-4">
+      <h2 className="text-xl font-semibold">{agent.name}</h2>
+      <div>Ce: {ceData.at(-1)?.toFixed(2)} {agent.unit}</div>
+      <div>Cp: {cpData.at(-1)?.toFixed(2)} {agent.unit}</div>
+      <div>Rate: {agent.rate} mL/h ({agent.gtt} gtt/min)</div>
+      <Plot
+        data={[
+          { x: cpData.map((_, i) => i), y: cpData, name: 'Cp' },
+          { x: ceData.map((_, i) => i), y: ceData, name: 'Ce', line: { dash: 'dash' } }
+        ]}
+        layout={{ width: 400, height: 250, title: 'Ce & Cp' }}
+      />
+      <button onClick={startTone} className="mt-2 px-4 py-2 bg-blue-500 text-white rounded">Metrônomo</button>
+    </div>
+  );
+}
 
-if st.session_state.page == "setup":
-    st.title("TIVA-SIM – Configuração Rápida")
-    col1, col2 = st.columns(2)
-    with col1:
-        weight = st.number_input("Peso (kg)", 30.0, 200.0, 70.0)
-        height = st.number_input("Altura (m)", 1.0, 2.5, 1.70, step=0.01)
-        age = st.number_input("Idade (anos)", 0, 100, 30)
-    with col2:
-        sex = st.radio("Sexo", ["M", "F"], index=0)
-        eq_name = st.selectbox("Equipo", list(EQUIPOS.keys()))
-        equipo = EQUIPOS[eq_name]
-        ce_target = st.slider("Ce alvo (µg/mL)", 1.0, 6.0, 3.0, 0.1)
-        duration = st.slider("Duração (min)", 5, 120, 60)
+// File: src/App.jsx
+import React, { useState } from 'react';
+import { useAgentStore } from './stores/agentStore';
+import AgentPanel from './components/AgentPanel';
+import { v4 as uuidv4 } from 'uuid';
 
-    if st.button("Iniciar Infusão"):
-        st.session_state.patient = Patient(weight, height, age, sex)
-        st.session_state.equipo = equipo
-        st.session_state.ce_target = ce_target
-        st.session_state.schedule = generate_schedule(st.session_state.patient, equipo, duration, ce_target)
-        st.session_state.start_time = time.time()
-        st.session_state.page = "running"
+export default function App() {
+  const [config, setConfig] = useState({ weight: '', height: '', age: '', sex: 'M', agent: 'propofol', targetType: 'Ce', target: 3.5 });
+  const { agents, addAgent } = useAgentStore();
 
-elif st.session_state.page == "running":
-    # Autoatualização a cada segundo via meta-refresh
-    st.markdown("<meta http-equiv='refresh' content='1'>", unsafe_allow_html=True)
-    patient = st.session_state.patient
-    patient = st.session_state.patient
-    schedule = st.session_state.schedule
-    equipo = st.session_state.equipo
-    ce_target = st.session_state.ce_target
-    wake_time = st.session_state.wake_time_min
+  const startSimulation = () => {
+    const id = uuidv4();
+    const ke0 = config.agent === 'propofol' ? 0.456 : 0.595;
+    const unit = config.agent === 'propofol' ? 'µg/mL' : 'ng/mL';
+    const rate = ((config.target * config.weight) / (ke0 * 60)).toFixed(1); // simplificado
+    const gtt = rate * (config.target < 4 ? 60 : 20);
+    addAgent({ id, name: config.agent, ...config, ke0, unit, rate, gtt, timeElapsed: 0, cePrev: 0 });
+  };
 
-    elapsed_sec = int(time.time() - st.session_state.start_time)
-    elapsed_min = elapsed_sec // 60
-    total_dur = schedule[-1].end_min
-    sim_dur = (wake_time + 20) if wake_time is not None else total_dur
+  return (
+    <div className="min-h-screen bg-gray-100 dark:bg-gray-900 p-6">
+      <div className="max-w-md mx-auto mb-6 p-4 bg-white dark:bg-gray-800 rounded-2xl shadow">
+        <h1 className="text-2xl font-bold mb-4">TIVA-SIM Configuração</h1>
+        {/* Inputs de configuração */}
+        {/* ... campos de peso, altura, idade, sexo, agente, tipo alvo, slider, botão */}
+        <button onClick={startSimulation} className="mt-4 w-full py-2 bg-green-500 text-white rounded">Iniciar Simulação</button>
+      </div>
+      <div>
+        {agents.map(agent => <AgentPanel key={agent.id} agent={agent} />)}
+      </div>
+    </div>
+  );
+}
 
-    st.title("TIVA-SIM – Infusão Ativa")
-    step = next((s for s in schedule if s.start_min <= elapsed_min < s.end_min), schedule[-1])
-    st.metric("Gotejamento (gtt/min)", step.gtt_min if not wake_time else 0)
-    st.progress(min(elapsed_min / sim_dur, 1.0))
-
-    ce_vals = estimate_ce_curve_schnider(patient, schedule, sim_dur, resolution_sec=1.0, stop_min=wake_time)
-    data = []
-    for i, ce in enumerate(ce_vals):
-        t = round(i / 60, 2)
-        gtt = next((s.gtt_min for s in schedule if s.start_min <= t < s.end_min), schedule[-1].gtt_min)
-        if wake_time is not None and t >= wake_time:
-            gtt = 0
-        data.append({"Minuto": t, "Gotas/min": gtt, "Ce (µg/mL)": ce})
-    df = pd.DataFrame(data).set_index('Minuto')
-    st.line_chart(df[['Gotas/min', 'Ce (µg/mL)']])
-
-    if wake_time is not None:
-        rec = predict_wake_recovery_time(ce_vals, wake_time)
-        if rec is not None:
-            st.success(f"Ce < 1 µg/mL em {rec} min pós-despertar.")
-        else:
-            st.warning("Ce ainda > 1 µg/mL; continue observação.")
-
-    col1, col2 = st.columns([1, 4])
-    if col1.button("Despertar agora"):
-        st.session_state.wake_time_min = elapsed_min
-    with col2:
-        st.caption("Interrompe infusão e simula washout de Ce.")
-
-else:
-    st.title("TIVA-SIM – Sessão Encerrada")
-    st.success("Infusão concluída ou despertada com sucesso.")
-    if st.button("Nova Sessão"):
-        for k in ["page", "start_time", "schedule", "patient", "equipo", "ce_target", "wake_time_min"]:
-            st.session_state.pop(k, None)
-        init_session_state()
-        st.experimental_rerun()
+// End of codebase
