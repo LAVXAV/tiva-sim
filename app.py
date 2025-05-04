@@ -3,7 +3,7 @@ app.py – TIVA-SIM (versão "Lite TCI")
 
 Simulador de infusão alvo-controlada de propofol usando equipo manual,
 baseado em modelo Schnider PK/PD, com Curva Ce em tempo real,
-autoatualização via tag HTML e simulação de washout e previsão de recobro.
+autoatualização e simulação de washout com previsão de recobro.
 """
 
 import time
@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import List
 import streamlit as st
 import pandas as pd
-
 
 # ──────────────────────────── Modelos & utilidades ──────────────────────────── #
 
@@ -46,48 +45,46 @@ EQUIPOS = {e.name: e for e in (MACRO, MICRO)}
 # Conversão empírica Ce → mg·kg⁻¹·h⁻¹
 MGKGH_FACTOR = 2.0
 
+
 def generate_schedule(patient: Patient, equipo: Equipo, duration_min: int, ce_target: float) -> List[ScheduleStep]:
-    mgkg_start = MGKGH_FACTOR * ce_target  # mg·kg⁻¹·h⁻¹
+    mgkg_start = MGKGH_FACTOR * ce_target
     w = patient.weight
-    mlh_start = mgkg_start * w / 10        # mL/h (10 mg/mL)
-    mlh_mid   = mlh_start * 0.8
+    mlh_start = mgkg_start * w / 10
+    mlh_mid = mlh_start * 0.8
     mlh_final = mlh_start * 0.667
 
     raw = []
     if duration_min <= 5:
         raw.append((0, duration_min, mlh_start))
     elif duration_min <= 15:
-        raw.extend([(0,5,mlh_start),(5,duration_min,mlh_mid)])
+        raw.extend([(0, 5, mlh_start), (5, duration_min, mlh_mid)])
     else:
-        raw.extend([(0,5,mlh_start),(5,15,mlh_mid),(15,duration_min,mlh_final)])
+        raw.extend([(0, 5, mlh_start), (5, 15, mlh_mid), (15, duration_min, mlh_final)])
 
-    return [ScheduleStep(s,e,r,equipo.gtt_per_min(r)) for (s,e,r) in raw]
+    return [ScheduleStep(s, e, r, equipo.gtt_per_min(r)) for (s, e, r) in raw]
 
 
 def estimate_ce_curve_schnider(patient: Patient, schedule: List[ScheduleStep], total_duration_min: int, resolution_sec: float = 1.0, stop_min: float = None) -> List[float]:
-    # Parâmetros Schnider fixos
     V1, V2 = 4.27, 18.9
     Cl1, Cl2 = 1.89, 1.29
     ke0 = 0.26
-
     steps = int(total_duration_min * 60 / resolution_sec)
-    Ce = [0.0]; C1 = 0.0; C2 = 0.0
+    Ce = [0.0]
+    C1 = 0.0
+    C2 = 0.0
     dt = resolution_sec / 60
 
     for i in range(1, steps):
         t_min = i * resolution_sec / 60
-        # Taxa zero após despertar
-        if stop_min and t_min >= stop_min:
+        if stop_min is not None and t_min >= stop_min:
             rate_ml_h = 0.0
         else:
             rate_ml_h = next((s.rate_ml_h for s in schedule if s.start_min <= t_min < s.end_min), schedule[-1].rate_ml_h)
         dose_mg = (rate_ml_h / 60) * 10
-
-        # Modelagem bicompartimental
-        dC1 = (dose_mg - Cl1*C1 - Cl2*(C1 - C2)) / V1
-        dC2 = (Cl2*(C1 - C2)) / V2
-        C1 += dC1 * dt; C2 += dC2 * dt
-
+        dC1 = (dose_mg - Cl1 * C1 - Cl2 * (C1 - C2)) / V1
+        dC2 = (Cl2 * (C1 - C2)) / V2
+        C1 += dC1 * dt
+        C2 += dC2 * dt
         Ce_prev = Ce[-1]
         Ce_now = Ce_prev + dt * ke0 * (C1 - Ce_prev)
         Ce.append(round(Ce_now, 3))
@@ -105,15 +102,7 @@ def predict_wake_recovery_time(ce_values: List[float], start_min: float, thresho
 
 
 def init_session_state():
-    defaults = {
-        "page": "setup",
-        "start_time": None,
-        "schedule": None,
-        "patient": None,
-        "equipo": None,
-        "ce_target": 3.0,
-        "wake_time_min": None
-    }
+    defaults = {"page": "setup", "start_time": None, "schedule": None, "patient": None, "equipo": None, "ce_target": 3.0, "wake_time_min": None}
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -131,11 +120,11 @@ if st.session_state.page == "setup":
         height = st.number_input("Altura (m)", 1.0, 2.5, 1.70, step=0.01)
         age = st.number_input("Idade (anos)", 0, 100, 30)
     with col2:
-        sex = st.radio("Sexo", ["M","F"], index=0)
+        sex = st.radio("Sexo", ["M", "F"], index=0)
         eq_name = st.selectbox("Equipo", list(EQUIPOS.keys()))
         equipo = EQUIPOS[eq_name]
         ce_target = st.slider("Ce alvo (µg/mL)", 1.0, 6.0, 3.0, 0.1)
-        duration = st.slider("Duração prevista (min)", 5, 120, 60)
+        duration = st.slider("Duração (min)", 5, 120, 60)
 
     if st.button("Iniciar Infusão"):
         st.session_state.patient = Patient(weight, height, age, sex)
@@ -144,46 +133,54 @@ if st.session_state.page == "setup":
         st.session_state.schedule = generate_schedule(st.session_state.patient, equipo, duration, ce_target)
         st.session_state.start_time = time.time()
         st.session_state.page = "running"
-        
 
 elif st.session_state.page == "running":
-    # Auto-update a cada segundo usando Streamlit RPC
-efault_line = 1
-st.experimental_rerun = lambda : None  # placeholder, rely on Streamlit auto-rerun
+    # Autoatualização a cada segundo (Streamlit recarrega automaticamente)
+    patient = st.session_state.patient
+    schedule = st.session_state.schedule
+    equipo = st.session_state.equipo
+    ce_target = st.session_state.ce_target
+    wake_time = st.session_state.wake_time_min
 
+    elapsed_sec = int(time.time() - st.session_state.start_time)
+    elapsed_min = elapsed_sec // 60
+    total_dur = schedule[-1].end_min
+    sim_dur = (wake_time + 20) if wake_time is not None else total_dur
+
+    st.title("TIVA-SIM – Infusão Ativa")
+    step = next((s for s in schedule if s.start_min <= elapsed_min < s.end_min), schedule[-1])
     st.metric("Gotejamento (gtt/min)", step.gtt_min if not wake_time else 0)
-    st.progress(min(elapsed_min/sim_dur,1.0))
+    st.progress(min(elapsed_min / sim_dur, 1.0))
 
-    ce_vals = estimate_ce_curve_schnider(patient, schedule, sim_dur, 1.0, stop_min=wake_time)
+    ce_vals = estimate_ce_curve_schnider(patient, schedule, sim_dur, resolution_sec=1.0, stop_min=wake_time)
     data = []
     for i, ce in enumerate(ce_vals):
-        t = round(i/60,2)
+        t = round(i / 60, 2)
         gtt = next((s.gtt_min for s in schedule if s.start_min <= t < s.end_min), schedule[-1].gtt_min)
-        if wake_time and t>=wake_time:
+        if wake_time is not None and t >= wake_time:
             gtt = 0
         data.append({"Minuto": t, "Gotas/min": gtt, "Ce (µg/mL)": ce})
     df = pd.DataFrame(data).set_index('Minuto')
-    st.line_chart(df[['Gotas/min','Ce (µg/mL)']])
+    st.line_chart(df[['Gotas/min', 'Ce (µg/mL)']])
 
-    if wake_time:
+    if wake_time is not None:
         rec = predict_wake_recovery_time(ce_vals, wake_time)
-        if rec:
-            st.success(f"Ce<1 µg/mL em {rec} min pós-despertar.")
+        if rec is not None:
+            st.success(f"Ce < 1 µg/mL em {rec} min pós-despertar.")
         else:
-            st.warning("Ce ainda >1 µg/mL; continue observação.")
+            st.warning("Ce ainda > 1 µg/mL; continue observação.")
 
-    col1, col2 = st.columns([1,4])
+    col1, col2 = st.columns([1, 4])
     if col1.button("Despertar agora"):
         st.session_state.wake_time_min = elapsed_min
-        
     with col2:
         st.caption("Interrompe infusão e simula washout de Ce.")
 
 else:
     st.title("TIVA-SIM – Sessão Encerrada")
-    st.success("Infusão finalizada ou despertada com sucesso.")
+    st.success("Infusão concluída ou despertada com sucesso.")
     if st.button("Nova Sessão"):
-        for k in ["page","start_time","schedule","patient","equipo","ce_target","wake_time_min"]:
-            del st.session_state[k]
+        for k in ["page", "start_time", "schedule", "patient", "equipo", "ce_target", "wake_time_min"]:
+            st.session_state.pop(k, None)
         init_session_state()
-        
+        st.experimental_rerun()
